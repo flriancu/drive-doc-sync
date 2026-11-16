@@ -217,15 +217,62 @@ export async function listShares(token: string, fileId: string): Promise<Share[]
 }
 
 /**
- * Lets `email` read the file (never change it). Google tells them by email. `drive.file` allows
- * this on files the app created, so no broader permission is needed.
+ * Lets `email` read the file, or with `role` 'writer' also change it. Google tells them by
+ * email. `drive.file` allows this on files the app created, so no broader permission is needed.
  */
-export async function shareFile(token: string, fileId: string, email: string): Promise<void> {
+export async function shareFile(token: string, fileId: string, email: string, role: 'reader' | 'writer' = 'reader'): Promise<void> {
   await call(token, `${permissions(fileId)}?${new URLSearchParams({ sendNotificationEmail: 'true', fields: 'id' })}`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ type: 'user', role: 'reader', emailAddress: email }),
+    body: JSON.stringify({ type: 'user', role, emailAddress: email }),
   });
+}
+
+/**
+ * Lets anyone who has the link read the file ("Anyone with the link", reader). Drive sends no
+ * email for this kind of access, and refuses `sendNotificationEmail` on it. Returns the
+ * permission id, to take the link away again with `unshareFile`.
+ */
+export async function shareWithLink(token: string, fileId: string): Promise<string> {
+  const response = await call(token, `${permissions(fileId)}?${new URLSearchParams({ fields: 'id' })}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'anyone', role: 'reader' }),
+  });
+  const body = await json<{ id?: unknown }>(response);
+  if (typeof body.id !== 'string') throw new DriveError(502, 'an answer without a permission id');
+  return body.id;
+}
+
+/**
+ * The file's resource key, if Drive gave it one: link-shared files may need it, sent along
+ * with the file id, before someone who never opened them can read them.
+ */
+export async function getResourceKey(token: string, fileId: string): Promise<string | undefined> {
+  const body = await json<{ resourceKey?: unknown }>(await call(token, `${FILES}/${encodeURIComponent(fileId)}?fields=resourceKey`));
+  return typeof body.resourceKey === 'string' && body.resourceKey ? body.resourceKey : undefined;
+}
+
+/**
+ * Reads a file shared with "Anyone with the link" without signing in: the request carries only
+ * the app's API key (and the file's resource key, if it has one), never a user's token.
+ */
+export async function readLinkSharedFile(apiKey: string, fileId: string, resourceKey?: string): Promise<string> {
+  let response: Response;
+  try {
+    response = await fetch(`${FILES}/${encodeURIComponent(fileId)}?${new URLSearchParams({ alt: 'media', key: apiKey })}`, {
+      ...(resourceKey && { headers: { 'X-Goog-Drive-Resource-Keys': `${fileId}/${resourceKey}` } }),
+      cache: 'no-store',
+      redirect: 'error',
+      signal: AbortSignal.timeout(CALL_TIMEOUT_MS),
+    });
+  } catch (e) {
+    throw new DriveError(0, e instanceof Error && e.name === 'TimeoutError' ? 'timeout' : 'network');
+  }
+  if (response.status === 404) throw new FileGoneError('missing');
+  // A 403 can mean the link was taken away, or a key restriction or rate limit: Google's text says which.
+  if (!response.ok) throw new DriveError(response.status, await response.text().catch(() => ''));
+  return response.text();
 }
 
 /** Takes one access away; one that is already gone (404) counts as done. */

@@ -2,7 +2,23 @@ export { UnsupportedDocumentError } from './errors';
 export type { DocumentModel, SyncNotice } from './model';
 
 export { AuthExpiredError, GoogleAuth, SignInError, type GoogleUser, type Session } from './google/auth';
-export { CALL_TIMEOUT_MS, DriveError, FileGoneError, type DriveApp, type DriveFile, type Share } from './google/drive';
+export {
+  CALL_TIMEOUT_MS,
+  createFile,
+  DriveError,
+  FileGoneError,
+  getResourceKey,
+  listShares,
+  readFile,
+  readLinkSharedFile,
+  shareFile,
+  shareWithLink,
+  unshareFile,
+  writeFile,
+  type DriveApp,
+  type DriveFile,
+  type Share,
+} from './google/drive';
 export { pickSharedFile, PickerLoadError, type PickerOptions } from './google/picker';
 
 export { DriveStorage } from './storage/DriveStorage';
