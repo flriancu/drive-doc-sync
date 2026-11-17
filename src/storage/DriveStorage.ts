@@ -16,7 +16,7 @@ import type { DocumentModel } from '../model';
 import type { Sharing } from './Sharing';
 import type { FileRef, SaveResult, Storage } from './Storage';
 
-const ref = (f: DriveFile): FileRef => ({ fileId: f.id, ownerName: '', writable: true });
+const ref = (f: DriveFile): FileRef => ({ fileId: f.id, ownerName: '', writable: true, version: f.version });
 
 /** The file's content; content that isn't JSON is a damaged file, not a Drive problem. */
 function parse(text: string): unknown {

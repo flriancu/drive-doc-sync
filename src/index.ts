@@ -38,5 +38,13 @@ export {
   type SyncSnapshot,
 } from './sync/DocumentSync';
 export { FollowedDocuments, type FollowedDocument, type FollowedState } from './sync/Followed';
-export { forgetSavedCopies, LocalReplica, replicaKey, unsavedCopies, type ReplicaAccount, type ReplicaStore } from './sync/Replica';
+export {
+  forgetSavedCopies,
+  LocalReplica,
+  replicaKey,
+  unsavedCopies,
+  type ReplicaAccount,
+  type ReplicaCopy,
+  type ReplicaStore,
+} from './sync/Replica';
 export { retryDelay } from './sync/retry';

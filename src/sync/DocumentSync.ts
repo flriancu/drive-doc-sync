@@ -1,6 +1,6 @@
 import type { DocumentModel, SyncNotice } from '../model';
 import { fileGone, isRetryable, needsSignIn, type Storage } from '../storage/Storage';
-import type { ReplicaStore } from './Replica';
+import type { ReplicaCopy, ReplicaStore } from './Replica';
 import { retryDelay } from './retry';
 
 /** `signin`: the Google session expired; changes are kept until the user reconnects. */
@@ -65,8 +65,9 @@ export class SaveConflictError extends Error {
 const MAX_ROUNDS = 3;
 
 /**
- * The open document and its way to storage: open (and create, merge duplicates, merge this
- * device's copy, carry the demo in), auto-save with a debounce, merge on conflicts, retry with
+ * The open document and its way to storage: open (show this device's copy at once, download
+ * the file only if it changed since, create, merge duplicates, merge this device's copy, carry
+ * the demo in), auto-save with a debounce, merge on conflicts, retry with
  * growing delays, pick up other devices' changes on `refresh`, save what's left on `close`.
  * Every storage call runs in one queue, so they never overlap. No React and no DOM here: the
  * app connects it to the page's events.
@@ -131,7 +132,7 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     // document back to this device, which signing out has just cleared.
     if (!this.current || this.closed) return;
     this.current = change(this.current);
-    this.options.replica?.write(this.current, true, this.fileId);
+    this.keepCopy(true);
     this.set({ doc: this.current, saveState: this.snapshot.saveState === 'signin' ? 'signin' : 'saving' });
     this.schedule(this.options.saveDelayMs ?? 1500);
   };
@@ -158,6 +159,7 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
       const mine = this.current;
       this.current = model.merge(mine, remote.doc);
       this.saved = model.hasLocalWins(mine, remote.doc) ? remote.doc : this.current;
+      this.keepCopy(this.dirty);
       this.set({ doc: this.current });
       if (this.dirty) this.schedule(0);
     }).catch((e: unknown) => {
@@ -193,9 +195,12 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     const startNew = how === 'new';
     // What this tab had open before (a reopen after its file went away) is kept and merged in.
     const before = startNew ? null : this.current && { doc: this.current, fileId: this.fileId };
+    const kept = startNew ? null : (replica?.read() ?? null);
+    const shown = this.showCopy(how, kept);
     const refs = await storage.listFiles();
     let doc: Doc;
     let duplicates: Doc[] = [];
+    let unchanged = false;
     this.duplicates = [];
     if (refs.length === 0) {
       const removed = await storage.listRemoved();
@@ -215,17 +220,26 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
       // added to it and then moved to the trash. One that can't be read is left alone: it must
       // not keep the document from opening.
       const [first, ...others] = refs;
-      ({ doc, version: this.version } = await storage.load(first!.fileId));
       this.fileId = first!.fileId;
-      for (const other of others) {
-        const loaded = await storage.load(other.fileId).catch(() => null);
-        if (!loaded) continue;
-        duplicates.push(loaded.doc);
-        this.duplicates.push(other.fileId);
+      // This device's copy holds every record of the version it names: if the file is still at
+      // that version, there is nothing to download.
+      unchanged = others.length === 0 && !!kept?.version && kept.fileId === first!.fileId && kept.version === first!.version;
+      if (unchanged) {
+        doc = kept!.doc;
+        this.version = kept!.version!;
+      } else {
+        ({ doc, version: this.version } = await storage.load(first!.fileId));
+        for (const other of others) {
+          const loaded = await storage.load(other.fileId).catch(() => null);
+          if (!loaded) continue;
+          duplicates.push(loaded.doc);
+          this.duplicates.push(other.fileId);
+        }
       }
     }
     if (owner && model.owner(doc) !== owner) throw new OtherOwnerError();
-    this.saved = doc;
+    // Taken from a copy with changes Drive lacks: what storage holds is not this, so it saves.
+    this.saved = unchanged && kept!.unsaved ? null : doc;
 
     let current = doc;
     for (const d of duplicates) current = model.absorb(current, d);
@@ -233,11 +247,12 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     const replaced = new Set(model.replaces(doc));
     const ours = (c: { doc: Doc; fileId?: string } | null | undefined) =>
       !!c && model.owner(c.doc) === model.owner(doc) && !replaced.has(c.fileId ?? '');
-    const kept = startNew ? null : replica?.read();
     if (startNew || (kept && !ours(kept))) replica?.clear();
     if (ours(kept)) current = model.absorb(current, kept!.doc);
     if (ours(before)) current = model.absorb(current, before!.doc);
-    if (!model.hasLocalWins(current, doc)) current = doc;
+    // Edits made to the copy on screen while this open was under way.
+    if (shown && ours(kept) && this.current && this.current !== shown) current = model.merge(this.current, current);
+    if (!model.hasLocalWins(current, doc) && this.saved === doc) current = doc;
     // A document converted on reading is saved once, so the file no longer needs converting.
     if (model.needsResave?.(doc) && current === doc) current = { ...doc };
     duplicates = [];
@@ -253,13 +268,30 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
 
     this.current = current;
     this.set({ doc: current, notices, saveState: this.dirty ? 'saving' : 'saved' });
-    if (this.dirty) {
-      replica?.write(current, true, this.fileId);
-      this.schedule(0);
-    } else {
-      replica?.write(current, false, this.fileId);
-      void this.removeDuplicates();
-    }
+    this.keepCopy(this.dirty);
+    if (this.dirty) this.schedule(0);
+    else void this.removeDuplicates();
+  }
+
+  /**
+   * Puts this device's copy of my document on screen before storage answers, so a reload shows
+   * it at once. Only on a first open, and only a copy of this account's. Returns what it showed.
+   */
+  private showCopy(how: OpenMode, kept: ReplicaCopy<Doc> | null): Doc | null {
+    const { owner, model } = this.options;
+    if (how !== 'normal' || this.current || !kept || (owner !== undefined && model.owner(kept.doc) !== owner)) return null;
+    this.current = kept.doc;
+    this.set({ doc: kept.doc, saveState: kept.unsaved ? 'saving' : 'saved' });
+    return kept.doc;
+  }
+
+  /**
+   * Writes this device's copy; with the file's version once there is a file, since the current
+   * document always holds every record of that version.
+   */
+  private keepCopy(unsaved: boolean) {
+    if (!this.current) return;
+    this.options.replica?.write(this.current, unsaved, this.fileId || undefined, this.fileId ? this.version : undefined);
   }
 
   private async saveRounds() {
@@ -273,7 +305,7 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
       if (result.ok) {
         this.version = result.version;
         this.saved = toSave;
-        this.options.replica?.write(this.current!, this.dirty, this.fileId);
+        this.keepCopy(this.dirty);
         this.set({ saveState: this.dirty ? 'saving' : 'saved', saveError: null });
         void this.removeDuplicates();
         if (this.dirty) this.schedule(this.options.saveDelayMs ?? 1500);

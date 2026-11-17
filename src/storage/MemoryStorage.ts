@@ -52,7 +52,9 @@ export class MemoryStorage<Doc> implements Storage<Doc> {
   }
 
   private refs(removed: boolean): FileRef[] {
-    return [...this.files].filter(([, f]) => !!f.removed === removed).map(([fileId]) => ({ fileId, ownerName: '', writable: true }));
+    return [...this.files]
+      .filter(([, f]) => !!f.removed === removed)
+      .map(([fileId, f]) => ({ fileId, ownerName: '', writable: true, version: String(f.version) }));
   }
 
   private get(fileId: string) {

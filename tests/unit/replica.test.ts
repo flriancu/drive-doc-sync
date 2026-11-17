@@ -65,4 +65,15 @@ describe("this device's copies of documents", () => {
     store.setItem(replicaKey(APP, 'old'), JSON.stringify({ unsaved: false, doc: doc(), calendarId: 'file-old' }));
     expect(replica('old', undefined, store).read()!.fileId).toBe('file-old');
   });
+
+  it('remembers which version of its file it holds, and keeps that through writes without one', () => {
+    const store = new FakeStorage() as unknown as Storage;
+    const r = replica('s', undefined, store);
+    r.write(doc(), false, 'file-1', '7');
+    expect(r.read()).toMatchObject({ fileId: 'file-1', version: '7', unsaved: false });
+    r.write(addRecord(doc(), 'b'), true); // an edit while the file is being looked up again
+    expect(r.read()).toMatchObject({ fileId: 'file-1', version: '7', unsaved: true });
+    r.write(doc(), false, 'file-2'); // another file: the old version says nothing about it
+    expect(r.read()!.version).toBeUndefined();
+  });
 });

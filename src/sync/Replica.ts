@@ -7,12 +7,22 @@ import type { DocumentModel } from '../model';
  * (records are merged by time, so replaying it is always safe).
  */
 export interface ReplicaStore<Doc> {
-  /** The copy, and the storage file (Drive file) it was a copy of. */
-  read(): { doc: Doc; fileId?: string } | null;
-  /** `unsaved`: holds changes that may not be in Drive yet. */
-  write(doc: Doc, unsaved: boolean, fileId?: string): void;
+  /** The copy, the storage file (Drive file) it was a copy of, and that file's version it holds. */
+  read(): ReplicaCopy<Doc> | null;
+  /**
+   * `unsaved`: holds changes that may not be in Drive yet. `version`: a version of `fileId`
+   * whose every record `doc` holds, so a file still at that version needs no download.
+   */
+  write(doc: Doc, unsaved: boolean, fileId?: string, version?: string): void;
   hasUnsaved(): boolean;
   clear(): void;
+}
+
+export interface ReplicaCopy<Doc> {
+  doc: Doc;
+  fileId?: string;
+  version?: string;
+  unsaved: boolean;
 }
 
 /** Whose copy it is, so a signed-out page can say which account has changes waiting. */
@@ -29,6 +39,7 @@ interface Stored {
   /** Older copies call it `calendarId`; both are read. */
   fileId?: string;
   calendarId?: string;
+  version?: string;
 }
 
 type KeyValueStore = Pick<Storage, 'getItem' | 'setItem' | 'removeItem'>;
@@ -45,24 +56,27 @@ export class LocalReplica<Doc> implements ReplicaStore<Doc> {
     private readonly store: KeyValueStore | null = safeLocalStorage(),
   ) {}
 
-  read(): { doc: Doc; fileId?: string } | null {
-    const s = this.stored();
-    return s ? { doc: s.doc, ...(s.fileId && { fileId: s.fileId }) } : null;
+  read(): ReplicaCopy<Doc> | null {
+    return this.stored();
   }
 
-  write(doc: Doc, unsaved: boolean, fileId?: string) {
+  write(doc: Doc, unsaved: boolean, fileId?: string, version?: string) {
     // Another tab may have written records this one hasn't seen: keep them (merge by time).
     const before = this.stored();
     const merged = before ? this.model.merge(doc, before.doc) : doc;
     // Still unsaved if this change is, or if the copy held something (another tab's) that `doc` lacks.
     const stillUnsaved = unsaved || (!!before?.unsaved && this.model.hasLocalWins(before.doc, doc));
     const file = fileId ?? before?.fileId;
+    // The merged copy holds every record of both copies it came from, so the version either one
+    // held is still true of it: this tab's, else the stored one for the same file.
+    const holds = version ?? (file === before?.fileId ? before?.version : undefined);
     try {
       const stored: Stored = {
         unsaved: stillUnsaved,
         doc: this.model.write(merged),
         ...(this.account && { account: this.account }),
         ...(file && { fileId: file }),
+        ...(file && holds && { version: holds }),
       };
       this.store?.setItem(this.key, JSON.stringify(stored));
     } catch {
@@ -82,7 +96,7 @@ export class LocalReplica<Doc> implements ReplicaStore<Doc> {
     }
   }
 
-  private stored(): { unsaved: boolean; doc: Doc; fileId?: string } | null {
+  private stored(): ReplicaCopy<Doc> | null {
     try {
       const raw = this.store?.getItem(this.key);
       if (!raw) return null;
@@ -92,6 +106,7 @@ export class LocalReplica<Doc> implements ReplicaStore<Doc> {
         unsaved: value.unsaved === true,
         doc: this.model.read(value.doc),
         ...(typeof fileId === 'string' && { fileId }),
+        ...(typeof fileId === 'string' && typeof value.version === 'string' && { version: value.version }),
       };
     } catch {
       return null; // unreadable: ignore it rather than break the app

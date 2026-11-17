@@ -42,7 +42,7 @@ const failure = async () =>
 describe('DriveStorage', () => {
   it("finds my document files by the app's property, with the token", async () => {
     const calls = fakeDrive([[/^GET .*\/drive\/v3\/files\?/, () => ({ json: { files: [{ id: 'f1', version: '3' }] } })]]);
-    expect(await storage().listFiles()).toEqual([{ fileId: 'f1', ownerName: '', writable: true }]);
+    expect(await storage().listFiles()).toEqual([{ fileId: 'f1', ownerName: '', writable: true, version: '3' }]);
     const q = new URL(calls[0]!.url).searchParams.get('q');
     expect(q).toContain("appProperties has { key='app' and value='test_app' }");
     expect(q).toContain("'me' in owners");

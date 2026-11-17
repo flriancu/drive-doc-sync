@@ -18,6 +18,8 @@ export interface FileRef {
   fileId: string;
   ownerName: string;
   writable: boolean;
+  /** The file's version, when the listing gives it: no separate request needed to compare. */
+  version?: string;
 }
 
 export type SaveResult = { ok: true; version: string } | { ok: false; conflict: true };

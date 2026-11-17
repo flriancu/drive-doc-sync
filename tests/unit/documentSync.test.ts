@@ -10,6 +10,19 @@ class TestStorage extends MemoryStorage<TestDoc> {
   failSaves: unknown[] = [];
   ignoreVersion = false;
   saves = 0;
+  loads = 0;
+  /** Holds every listing until released, to see what is on screen meanwhile. */
+  listGate: Promise<void> | null = null;
+
+  override async listFiles() {
+    if (this.listGate) await this.listGate;
+    return super.listFiles();
+  }
+
+  override async load(fileId: string) {
+    this.loads++;
+    return super.load(fileId);
+  }
 
   override async save(fileId: string, doc: TestDoc, baseVersion: string): Promise<SaveResult> {
     this.saves++;
@@ -322,6 +335,90 @@ describe('DocumentSync', () => {
     expect(s.getSnapshot().notices).toEqual([{ kind: 'converted', count: 1 }]);
     expect(storage.saves).toBe(1);
     expect((await storage.load(fileId)).doc).not.toHaveProperty('legacy');
+  });
+});
+
+/** A saved document with one record, and this device's copy of it. */
+async function savedWithCopy() {
+  const storage = new TestStorage();
+  const store = new MapStore();
+  const first = sync(storage, { replica: replicaIn(store) });
+  await first.open();
+  add(first, 'a');
+  await first.flush();
+  await first.close();
+  storage.loads = 0;
+  return { storage, store };
+}
+
+describe('DocumentSync: a reload with a copy on this device (D-24)', () => {
+  it('shows the copy at once, and downloads nothing when the file has not changed', async () => {
+    const { storage, store } = await savedWithCopy();
+    let release!: () => void;
+    storage.listGate = new Promise((r) => (release = r));
+    const s = sync(storage, { replica: replicaIn(store) });
+    const opening = s.open();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(values(s.getSnapshot().doc!)).toEqual(['a']); // Drive has not answered yet
+    release();
+    await opening;
+    expect(storage.loads).toBe(0);
+    expect(s.getSnapshot().saveState).toBe('saved');
+    expect(storage.saves).toBe(1); // the first save only
+  });
+
+  it('downloads the file when another device saved since, and keeps both', async () => {
+    const { storage, store } = await savedWithCopy();
+    const other = sync(storage);
+    await other.open();
+    add(other, 'b');
+    await other.flush();
+    storage.loads = 0;
+    const s = sync(storage, { replica: replicaIn(store) });
+    await s.open();
+    expect(storage.loads).toBe(1);
+    expect(values(s.getSnapshot().doc!)).toEqual(['a', 'b']);
+  });
+
+  it('saves a copy whose changes never reached the file, without downloading it', async () => {
+    const { storage, store } = await savedWithCopy();
+    const cut = sync(storage, { replica: replicaIn(store) });
+    await cut.open();
+    add(cut, 'b'); // the tab closes before the save
+    const s = sync(storage, { replica: replicaIn(store) });
+    await s.open();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(storage.loads).toBe(0);
+    expect(await stored(storage)).toEqual(['a', 'b']);
+    expect(replicaIn(store).hasUnsaved()).toBe(false);
+  });
+
+  it('keeps an edit made to the copy while Drive was still answering', async () => {
+    const { storage, store } = await savedWithCopy();
+    let release!: () => void;
+    storage.listGate = new Promise((r) => (release = r));
+    const s = sync(storage, { replica: replicaIn(store) });
+    const opening = s.open();
+    await vi.advanceTimersByTimeAsync(0);
+    add(s, 'typed meanwhile');
+    release();
+    await opening;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(values(s.getSnapshot().doc!)).toEqual(['a', 'typed meanwhile']);
+    expect(await stored(storage)).toEqual(['a', 'typed meanwhile']);
+  });
+
+  it("never shows another account's copy", async () => {
+    const { storage, store } = await savedWithCopy();
+    const s = new DocumentSync({ storage, model: testModel, init: () => newDoc('sub-2'), owner: 'sub-2', replica: replicaIn(store) });
+    let release!: () => void;
+    storage.listGate = new Promise((r) => (release = r));
+    const opening = s.open();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(s.getSnapshot().doc).toBeNull();
+    release();
+    await opening;
+    expect(s.getSnapshot().loadError).toBeInstanceOf(OtherOwnerError); // the file is the other account's too
   });
 });
 
