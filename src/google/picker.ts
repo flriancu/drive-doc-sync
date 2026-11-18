@@ -1,32 +1,15 @@
+/// <reference types="google.picker" />
 /**
  * Google's file picker. With `drive.file` the app may read another person's document file
  * only after I pick it here once; from then on it can read it like its own.
  */
 const API_SRC = 'https://apis.google.com/js/api.js';
 
-/** The small part of the Picker API (apis.google.com/js/api.js, then gapi.load('picker')) the package uses. */
-interface PickerApi {
-  DocsView: new (viewId: string) => DocsView;
-  PickerBuilder: new () => PickerBuilder;
-  ViewId: { DOCS: string };
-  Action: { PICKED: string; CANCEL: string };
-}
-interface DocsView {
-  setOwnedByMe(ownedByMe: boolean): DocsView;
-  setMimeTypes(types: string): DocsView;
-  setQuery(query: string): DocsView;
-  setIncludeFolders(include: boolean): DocsView;
-}
-interface PickerBuilder {
-  addView(view: DocsView): PickerBuilder;
-  setOAuthToken(token: string): PickerBuilder;
-  setDeveloperKey(key: string): PickerBuilder;
-  setAppId(appId: string): PickerBuilder;
-  setLocale(locale: string): PickerBuilder;
-  setTitle(title: string): PickerBuilder;
-  setCallback(callback: (result: { action: string; docs?: { id: string; name?: string }[] }) => void): PickerBuilder;
-  build(): { setVisible(visible: boolean): void };
-}
+/**
+ * The Picker API (apis.google.com/js/api.js, then gapi.load('picker')), typed by Google's own
+ * declarations (@types/google.picker), referenced here so an app compiling this package gets them.
+ */
+type PickerApi = typeof google.picker;
 type WithPicker = Window & {
   gapi?: { load(name: string, options: { callback: () => void; onerror: () => void }): void };
   google?: { picker?: PickerApi };
@@ -73,8 +56,8 @@ export interface PickerOptions {
   token: string;
   apiKey: string;
   appId: string;
-  /** The picker's own language, e.g. "ro" or "en". */
-  locale: string;
+  /** The picker's own language, one Google offers, e.g. "ro" or "en". */
+  locale: google.picker.Locales;
   title: string;
   /** Narrows the list to the app's files, e.g. their file name. */
   query: string;
@@ -94,11 +77,8 @@ export async function pickSharedFile({
 }: PickerOptions): Promise<{ id: string; name: string } | null> {
   const picker = await loadPicker();
   return new Promise((resolve, reject) => {
-    const view = new picker.DocsView(picker.ViewId.DOCS)
-      .setOwnedByMe(false)
-      .setIncludeFolders(false)
-      .setMimeTypes('application/json')
-      .setQuery(query);
+    const view = new picker.DocsView(picker.ViewId.DOCS).setOwnedByMe(false).setIncludeFolders(false).setMimeTypes('application/json');
+    view.setQuery(query); // a View method: it returns the plain View, not the DocsView
     new picker.PickerBuilder()
       .addView(view)
       .setOAuthToken(token)

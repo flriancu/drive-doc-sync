@@ -37,7 +37,7 @@ sync.update((doc) => change(doc)); // saved after a short delay; merged on confl
 
 | Module | What it does |
 |---|---|
-| `google/auth` | Sign-in with Google's token client; the session lives in `sessionStorage` per tab, never in `localStorage`. |
+| `google/auth` | Sign-in with Google's token client, its callbacks given when it is made, as Google documents it; the session lives in `sessionStorage` per tab, never in `localStorage`. Typed by Google's `@types/google.accounts` and `@types/google.picker`, which install with the package (types only, nothing in the bundle). |
 | `google/drive` | Drive REST v3 calls: find, read, create, write, trash; share with a person as reader or writer, or with anyone who has the link; read a link-shared file with only the API key. No HTTP cache, no redirects, 30 s timeout. |
 | `google/picker` | Google's file picker, to open a file someone else shared (needed with the `drive.file` permission). |
 | `storage/DriveStorage`, `storage/MemoryStorage` | The `Storage` interface on Drive, and in memory for demos and tests. |
@@ -51,7 +51,7 @@ Apps depend on a version tag of this repository; there is no registry. npm 12 in
 dependencies only when allowed, so the app's `.npmrc` has `allow-git=all`.
 
 ```json
-"dependencies": { "drive-doc-sync": "github:flriancu/drive-doc-sync#semver:^0.4.0" }
+"dependencies": { "drive-doc-sync": "github:flriancu/drive-doc-sync#semver:^0.5.0" }
 ```
 
 The package ships TypeScript sources; the app's Vite build compiles them.

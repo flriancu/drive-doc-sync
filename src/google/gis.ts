@@ -1,40 +1,14 @@
-/** The small part of Google Identity Services (accounts.google.com/gsi/client) the package uses. */
-export interface TokenResponse {
-  access_token: string;
-  expires_in: number;
-  scope: string;
-  error?: string;
-  error_description?: string;
-}
+/// <reference types="google.accounts" />
+/**
+ * Google Identity Services' OAuth 2.0 client (accounts.google.com/gsi/client), typed by
+ * Google's own declarations (@types/google.accounts). Referenced here rather than through
+ * `types` in a tsconfig, so an app compiling this package's sources gets them too.
+ */
+export type OAuth2 = typeof google.accounts.oauth2;
+export type TokenClient = google.accounts.oauth2.TokenClient;
+export type TokenResponse = google.accounts.oauth2.TokenResponse;
+export type ClientConfigError = google.accounts.oauth2.ClientConfigError;
 
-export interface ClientConfigError {
-  type: 'popup_failed_to_open' | 'popup_closed' | 'unknown';
-  message?: string;
-}
-
-export interface TokenClientConfig {
-  client_id: string;
-  scope: string;
-  callback: (response: TokenResponse) => void;
-  error_callback?: (error: ClientConfigError) => void;
-}
-
-export interface OverridableTokenClientConfig {
-  prompt?: '' | 'none' | 'consent' | 'select_account';
-  login_hint?: string;
-}
-
-export interface TokenClient {
-  callback: (response: TokenResponse) => void;
-  error_callback?: (error: ClientConfigError) => void;
-  requestAccessToken(overrides?: OverridableTokenClientConfig): void;
-}
-
-export interface OAuth2 {
-  initTokenClient(config: TokenClientConfig): TokenClient;
-  hasGrantedAllScopes(response: TokenResponse, ...scopes: string[]): boolean;
-}
-
-/** Google's OAuth 2.0 client, once its script has loaded. */
+/** Google's OAuth 2.0 client, once its script has loaded (before that, `google` does not exist). */
 export const oauth2 = (): OAuth2 | undefined =>
   (window as Window & { google?: { accounts?: { oauth2?: OAuth2 } } }).google?.accounts?.oauth2;

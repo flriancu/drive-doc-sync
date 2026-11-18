@@ -66,6 +66,11 @@ export class GoogleAuth {
   private token: string | null = null;
   private session: Session | null = null;
   private loadFailed = false;
+  /**
+   * The sign-in waiting for Google's answer. The token client takes its callbacks once, when it
+   * is made (Google's documented use); they hand each answer to the sign-in waiting now.
+   */
+  private waiting: { resolve: (r: TokenResponse) => void; reject: (e: Error) => void } | null = null;
 
   /**
    * `sessionKey`: the sessionStorage key that keeps this tab's session across reloads; one per
@@ -86,7 +91,8 @@ export class GoogleAuth {
       this.client ??= oauth2()!.initTokenClient({
         client_id: this.clientId,
         scope: this.scopes.join(' '),
-        callback: () => {},
+        callback: (r) => (r.error ? this.settle(new SignInError('google', r.error_description || r.error)) : this.settle(r)),
+        error_callback: (e) => this.settle(new SignInError('popup', e.message || e.type)),
       });
     } catch {
       this.loadFailed = true; // reported on the next click, as "blocked" rather than "still loading"
@@ -121,8 +127,7 @@ export class GoogleAuth {
         : new SignInError('not_ready', 'Google sign-in is still loading');
     }
     const response = await new Promise<TokenResponse>((resolve, reject) => {
-      client.callback = (r) => (r.error ? reject(new SignInError('google', r.error_description || r.error)) : resolve(r));
-      client.error_callback = (e) => reject(new SignInError('popup', e.message || e.type));
+      this.waiting = { resolve, reject };
       client.requestAccessToken({ prompt: hint ? '' : 'select_account', ...(hint && { login_hint: hint }) });
     });
     if (!oauth2()!.hasGrantedAllScopes(response, this.requiredScope)) {
@@ -131,9 +136,18 @@ export class GoogleAuth {
     const user = await readUser(response.access_token);
     if (expectSub && user.sub !== expectSub) throw new SignInError('other_account', 'A different Google account answered');
     this.token = response.access_token;
-    this.session = { user, expiresAt: Date.now() + response.expires_in * 1000 - EARLY_MS };
+    // Google documents expires_in as seconds without a type; its declarations say text.
+    this.session = { user, expiresAt: Date.now() + Number(response.expires_in) * 1000 - EARLY_MS };
     keep(this.sessionKey, { token: this.token, session: this.session });
     return this.session;
+  }
+
+  /** Hands Google's answer to the sign-in waiting for it; an answer nobody waits for is dropped. */
+  private settle(answer: TokenResponse | Error) {
+    const waiting = this.waiting;
+    this.waiting = null;
+    if (answer instanceof Error) waiting?.reject(answer);
+    else waiting?.resolve(answer);
   }
 
   /** The session of this tab from before a reload, if it hasn't expired. */
