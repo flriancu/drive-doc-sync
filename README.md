@@ -51,7 +51,7 @@ Apps depend on a version tag of this repository; there is no registry. npm 12 in
 dependencies only when allowed, so the app's `.npmrc` has `allow-git=all`.
 
 ```json
-"dependencies": { "drive-doc-sync": "github:flriancu/drive-doc-sync#semver:^0.6.0" }
+"dependencies": { "drive-doc-sync": "github:flriancu/drive-doc-sync#semver:^0.7.0" }
 ```
 
 The package ships TypeScript sources; the app's Vite build compiles them.

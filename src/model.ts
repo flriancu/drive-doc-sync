@@ -1,10 +1,11 @@
 /**
  * Something the app tells the user once a document is open, e.g. "3 records were set aside".
  * The package's own: 'carried' (records added from `carry`), 'unreadableFiles' (document files
- * that could not be read and were left alone in storage).
+ * that could not be read and were left alone in storage), 'replacedChanges' (this tab followed a
+ * document started in its place elsewhere; changes it had not saved to the old one were left).
  */
 export interface SyncNotice<K extends string = string> {
-  kind: K | 'carried' | 'unreadableFiles';
+  kind: K | 'carried' | 'unreadableFiles' | 'replacedChanges';
   count: number;
 }
 

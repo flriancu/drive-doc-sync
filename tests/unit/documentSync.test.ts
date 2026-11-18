@@ -307,6 +307,24 @@ describe('DocumentSync', () => {
     await vi.advanceTimersByTimeAsync(0);
     expect(store.items.values().next().value).not.toContain('old private note');
     expect(values(oldTab.getSnapshot().doc!)).toEqual(['new note']); // it follows the new document
+    expect(oldTab.getSnapshot().notices).toContainEqual({ kind: 'replacedChanges', count: 1 }); // and says what it left
+  });
+
+  it('looks for a file that keeps answering "not found" again with growing delays, not in a loop', async () => {
+    const storage = new TestStorage();
+    const s = sync(storage);
+    await s.open();
+    const gone = Object.assign(new Error('404'), { fileGone: true });
+    let lists = 0;
+    const listFiles = storage.listFiles.bind(storage);
+    storage.listFiles = async () => (lists++, listFiles()); // the listing still shows the file
+    storage.save = async () => {
+      throw gone;
+    };
+    add(s, 'a');
+    await vi.advanceTimersByTimeAsync(10_000);
+    expect(lists).toBeLessThanOrEqual(4); // after the debounce: at once, then after about 2 s and 4 s, not hundreds
+    expect(s.getSnapshot().saveState).toBe('error');
   });
 
   it('opens the next file when the oldest is damaged, leaves the damaged one alone, and says so', async () => {

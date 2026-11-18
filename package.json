@@ -1,6 +1,6 @@
 {
   "name": "drive-doc-sync",
-  "version": "0.6.0",
+  "version": "0.7.0",
   "description": "Keeps one JSON document per Google account in that account's own Google Drive: sign-in, storage, merge on conflict, a device copy, sharing and Google's file picker. Browser only, no server.",
   "type": "module",
   "exports": {

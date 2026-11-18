@@ -101,6 +101,10 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
   private attempts = 0;
   private loadAttempts = 0;
   private loadTimer: ReturnType<typeof setTimeout> | undefined;
+  /** Reopens in a row since the last save that went through: the next one waits longer. */
+  private reopens = 0;
+  /** This tab left changes it had not saved, following a document that replaced its own. */
+  private leftChanges = false;
   private closed = false;
 
   constructor(private readonly options: SyncOptions<Doc, Notice>) {}
@@ -178,7 +182,7 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
       this.set({ doc: this.current });
       if (this.dirty) this.schedule(0);
     }).catch((e: unknown) => {
-      if (fileGone(e)) this.reopen();
+      if (fileGone(e)) this.reopenAfter(e);
       else if (needsSignIn(e)) this.set({ saveState: 'signin' });
       // otherwise: a missed refresh is harmless, the next save merges anyway
     });
@@ -321,6 +325,8 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
 
     const notices: SyncNotice<Notice>[] = [];
     if (unreadable) notices.push({ kind: 'unreadableFiles', count: unreadable });
+    if (this.leftChanges) notices.push({ kind: 'replacedChanges', count: 1 });
+    this.leftChanges = false;
     const demo = carry?.();
     const carried = demo ? model.contentCount(demo) : 0;
     if (demo && carried) {
@@ -376,7 +382,10 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     if (!this.current || !replica || this.closed) return;
     const result = replica.write(this.current, unsaved, this.fileId || undefined, this.fileId ? this.version : undefined);
     // Another tab started a new document in place of this one: follow it, as a reopen does.
-    if (result === 'replaced') return this.reopen();
+    if (result === 'replaced') {
+      this.leftChanges = this.dirty;
+      return this.reopen();
+    }
     const kept = result === 'kept';
     if (kept !== this.snapshot.copyKept) this.set({ copyKept: kept });
   }
@@ -392,6 +401,7 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
       if (result.ok) {
         this.version = result.version;
         this.saved = toSave;
+        this.reopens = 0;
         this.keepCopy(this.dirty);
         this.set({ saveState: this.dirty ? 'saving' : 'saved', saveError: null });
         void this.removeDuplicates();
@@ -410,7 +420,7 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
 
   private failed(e: unknown) {
     if (fileGone(e)) {
-      this.reopen();
+      this.reopenAfter(e);
       return;
     }
     if (needsSignIn(e)) {
@@ -431,6 +441,19 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     this.reopenedFrom = this.fileId || this.reopenedFrom;
     this.fileId = '';
     void this.open();
+  }
+
+  /**
+   * Looks for the document again after its file went away: at once the first time; again in a
+   * row (the listing still shows a file that answers "not found"), after a growing delay and
+   * with the error on screen, so it never turns into a loop of requests.
+   */
+  private reopenAfter(e: unknown) {
+    const attempt = this.reopens++;
+    if (attempt === 0) return this.reopen();
+    this.set({ saveState: 'error', saveError: e });
+    clearTimeout(this.loadTimer);
+    this.loadTimer = setTimeout(() => this.reopen(), retryDelay(attempt - 1));
   }
 
   private async removeDuplicates() {
