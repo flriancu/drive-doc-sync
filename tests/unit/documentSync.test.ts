@@ -495,6 +495,26 @@ describe('DocumentSync: after sign-out, deleted documents, replaced documents', 
     expect(store.items.size).toBe(0);
   });
 
+  it('removes the copy kept at sign-out once the slow save it waited for lands', async () => {
+    const storage = new TestStorage();
+    const store = new MapStore();
+    const s = sync(storage, { replica: replicaIn(store), closeWaitMs: 100 });
+    await s.open();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const save = storage.save.bind(storage);
+    storage.save = async (...args) => (await gate, save(...args));
+    add(s, 'a');
+    const closing = s.close();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await closing).toBe(false); // signing out keeps the copy: the change is not in Drive yet
+    expect(store.items.size).toBe(1);
+    release();
+    await vi.advanceTimersByTimeAsync(0);
+    expect(await stored(storage)).toEqual(['a']);
+    expect(store.items.size).toBe(0);
+  });
+
   it('says when this device has no room for its copy, and when it has again', async () => {
     const storage = new TestStorage();
     const store = new MapStore();

@@ -185,6 +185,7 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
    * change, waiting at most `closeWaitMs`: a Drive that doesn't answer must not keep someone
    * signed in. Resolves true when nothing is left unsaved (otherwise this device's copy keeps
    * it). From here on the device copy is never written again: signing out may have cleared it.
+   * A save that lands after the wait removes the copy it left behind.
    */
   async close(): Promise<boolean> {
     this.closed = true;
@@ -194,19 +195,33 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     let timer: ReturnType<typeof setTimeout> | undefined;
     const wait = new Promise<void>((resolve) => (timer = setTimeout(resolve, this.options.closeWaitMs ?? 5000)));
     const settled = this.enqueue(() => this.settle()).then(
-      () => true,
+      () => !this.dirty,
       (e: unknown) => (this.failed(e), false),
     );
-    const done = await Promise.race([settled, wait.then(() => false)]);
+    const done = await Promise.race([settled, wait.then(() => null)]);
     clearTimeout(timer);
-    return done && !this.dirty;
+    // Late, the session is usually gone and the check after the save fails; the save itself
+    // going through (nothing dirty) is then all that can be known.
+    if (done === null) void settled.then(() => !this.dirty && this.forgetSavedCopy());
+    return done === true;
   }
 
   /**
-   * Saves what is left, then makes sure storage holds it. Drive cannot write only if nothing
-   * changed since (no compare-and-swap, DriveStorage), so another device saving in the same
-   * instant can overwrite this one's last save; this device then still holds the records and
-   * writes them back, before anything that would forget them (sign-out) goes ahead.
+   * Removes this device's copy when storage holds every record in it: kept at sign-out because a
+   * save was still under way, it has nothing left to keep. A copy with anything more (written
+   * since by a new session of the same account) stays.
+   */
+  private forgetSavedCopy() {
+    const { replica, model } = this.options;
+    const copy = replica?.read();
+    if (copy && this.saved && !model.hasLocalWins(copy.doc, this.saved)) replica!.clear();
+  }
+
+  /**
+   * Saves what is left, then makes sure storage holds it. Drive offers no write that happens only
+   * if the file is unchanged (DriveStorage), so another device saving in the same instant can
+   * overwrite this one's last save; this device then still holds the records and writes them
+   * back, before anything that would forget them (sign-out) goes ahead.
    */
   private async settle() {
     const { storage, model } = this.options;
