@@ -58,9 +58,10 @@ export class DriveStorage<Doc> implements Storage<Doc>, Sharing {
   }
 
   /**
-   * Drive has no compare-and-swap, so this checks the version first and then writes. Two
+   * Drive documents no compare-and-swap, so this checks the version first and then writes. Two
    * devices saving within that gap can overwrite each other; the loser still holds its records
-   * (in memory and in the device's saved copy) and merges them back on its next save or open.
+   * (in memory and in the device's saved copy) and writes them back when it next sees a newer
+   * version: on refresh, on open, and before `DocumentSync.close` reports everything saved.
    */
   async save(fileId: string, doc: Doc, baseVersion: string): Promise<SaveResult> {
     const token = this.token();

@@ -152,6 +152,25 @@ describe('DocumentSync', () => {
     expect(await stored(storage)).toEqual(['from laptop', 'from phone']);
   });
 
+  it('writes back, before closing (sign-out), an edit another device wrote over in the same instant', async () => {
+    const storage = new TestStorage();
+    const phone = sync(storage);
+    const laptop = sync(storage);
+    await phone.open();
+    await laptop.open();
+    add(phone, 'from phone');
+    await phone.flush();
+    expect(phone.getSnapshot().saveState).toBe('saved');
+    storage.ignoreVersion = true;
+    add(laptop, 'from laptop');
+    await laptop.flush();
+    storage.ignoreVersion = false;
+    expect(await stored(storage)).toEqual(['from laptop']);
+    // The phone signs out: it may forget its copy only once the file holds its record again.
+    expect(await phone.close()).toBe(true);
+    expect(await stored(storage)).toEqual(['from laptop', 'from phone']);
+  });
+
   it('picks up what another device saved when the page comes back into view', async () => {
     const storage = new TestStorage();
     const a = sync(storage);
@@ -452,6 +471,48 @@ describe('DocumentSync: after sign-out, deleted documents, replaced documents', 
     add(s, 'a'); // say, Google's picker answering late
     expect(store.items.size).toBe(0);
     expect(replica.read()).toBeNull();
+  });
+
+  it('never writes the device copy again after sign-out, even when a slow save finishes later', async () => {
+    const storage = new TestStorage();
+    const store = new MapStore();
+    const replica = replicaIn(store);
+    const s = sync(storage, { replica, closeWaitMs: 100 });
+    await s.open();
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const save = storage.save.bind(storage);
+    storage.save = async (...args) => (await gate, save(...args));
+    add(s, 'a');
+    const flushing = s.flush();
+    const closing = s.close();
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await closing).toBe(false);
+    replica.clear(); // what signing out does with a copy it may drop
+    release();
+    await flushing;
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.items.size).toBe(0);
+  });
+
+  it('says when this device has no room for its copy, and when it has again', async () => {
+    const storage = new TestStorage();
+    const store = new MapStore();
+    let full = false;
+    const setItem = store.setItem;
+    store.setItem = (k, v) => {
+      if (full) throw new DOMException('quota', 'QuotaExceededError');
+      setItem(k, v);
+    };
+    const s = sync(storage, { replica: replicaIn(store) });
+    await s.open();
+    expect(s.getSnapshot().copyKept).toBe(true);
+    full = true;
+    add(s, 'big');
+    expect(s.getSnapshot().copyKept).toBe(false);
+    full = false;
+    add(s, 'small again');
+    expect(s.getSnapshot().copyKept).toBe(true);
   });
 
   it('asks before bringing a document deleted for good back from a device copy', async () => {

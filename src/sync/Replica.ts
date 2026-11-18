@@ -12,8 +12,9 @@ export interface ReplicaStore<Doc> {
   /**
    * `unsaved`: holds changes that may not be in Drive yet. `version`: a version of `fileId`
    * whose every record `doc` holds, so a file still at that version needs no download.
+   * Returns false when the copy could not be stored (storage full or blocked).
    */
-  write(doc: Doc, unsaved: boolean, fileId?: string, version?: string): void;
+  write(doc: Doc, unsaved: boolean, fileId?: string, version?: string): boolean;
   hasUnsaved(): boolean;
   clear(): void;
 }
@@ -60,7 +61,7 @@ export class LocalReplica<Doc> implements ReplicaStore<Doc> {
     return this.stored();
   }
 
-  write(doc: Doc, unsaved: boolean, fileId?: string, version?: string) {
+  write(doc: Doc, unsaved: boolean, fileId?: string, version?: string): boolean {
     // Another tab may have written records this one hasn't seen: keep them (merge by time).
     const before = this.stored();
     const merged = before ? this.model.merge(doc, before.doc) : doc;
@@ -78,9 +79,13 @@ export class LocalReplica<Doc> implements ReplicaStore<Doc> {
         ...(file && { fileId: file }),
         ...(file && holds && { version: holds }),
       };
-      this.store?.setItem(this.key, JSON.stringify(stored));
+      if (!this.store) return false;
+      this.store.setItem(this.key, JSON.stringify(stored));
+      return true;
     } catch {
-      // storage full or blocked: Drive is still the copy that counts
+      // Storage full (a document over the browser's quota) or blocked: there is no copy, and the
+      // caller must not promise one.
+      return false;
     }
   }
 

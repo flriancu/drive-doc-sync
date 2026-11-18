@@ -13,6 +13,11 @@ export interface SyncSnapshot<Doc, Notice extends string = string> {
   saveError: unknown;
   loadError: unknown;
   notices: readonly SyncNotice<Notice>[];
+  /**
+   * False when this device could not store its copy (storage full or blocked): changes not in
+   * storage yet then live only in this page, and closing it loses them.
+   */
+  copyKept: boolean;
 }
 
 export interface SyncOptions<Doc, Notice extends string = string> {
@@ -73,7 +78,14 @@ const MAX_ROUNDS = 3;
  * app connects it to the page's events.
  */
 export class DocumentSync<Doc extends object, Notice extends string = string> {
-  private snapshot: SyncSnapshot<Doc, Notice> = { doc: null, saveState: 'saved', saveError: null, loadError: null, notices: [] };
+  private snapshot: SyncSnapshot<Doc, Notice> = {
+    doc: null,
+    saveState: 'saved',
+    saveError: null,
+    loadError: null,
+    notices: [],
+    copyKept: true,
+  };
   private readonly listeners = new Set<() => void>();
   private opening: Promise<void> | null = null;
   private current: Doc | null = null;
@@ -169,21 +181,47 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     });
 
   /**
-   * Stops retrying and makes one last save (sign-out, unmount), waiting for it at most
-   * `closeWaitMs`: a Drive that doesn't answer must not keep someone signed in. Resolves true
-   * when nothing is left unsaved (otherwise this device's copy keeps it).
+   * Stops retrying, makes one last save (sign-out, unmount) and checks that storage holds every
+   * change, waiting at most `closeWaitMs`: a Drive that doesn't answer must not keep someone
+   * signed in. Resolves true when nothing is left unsaved (otherwise this device's copy keeps
+   * it). From here on the device copy is never written again: signing out may have cleared it.
    */
   async close(): Promise<boolean> {
     this.closed = true;
     clearTimeout(this.timer);
     clearTimeout(this.loadTimer);
-    if (this.dirty) {
-      let timer: ReturnType<typeof setTimeout> | undefined;
-      const wait = new Promise<void>((resolve) => (timer = setTimeout(resolve, this.options.closeWaitMs ?? 5000)));
-      await Promise.race([this.flush(), wait]);
-      clearTimeout(timer);
+    if (!this.current || !this.fileId) return !this.dirty;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const wait = new Promise<void>((resolve) => (timer = setTimeout(resolve, this.options.closeWaitMs ?? 5000)));
+    const settled = this.enqueue(() => this.settle()).then(
+      () => true,
+      (e: unknown) => (this.failed(e), false),
+    );
+    const done = await Promise.race([settled, wait.then(() => false)]);
+    clearTimeout(timer);
+    return done && !this.dirty;
+  }
+
+  /**
+   * Saves what is left, then makes sure storage holds it. Drive cannot write only if nothing
+   * changed since (no compare-and-swap, DriveStorage), so another device saving in the same
+   * instant can overwrite this one's last save; this device then still holds the records and
+   * writes them back, before anything that would forget them (sign-out) goes ahead.
+   */
+  private async settle() {
+    const { storage, model } = this.options;
+    for (let round = 0; round < MAX_ROUNDS; round++) {
+      await this.saveRounds();
+      if ((await storage.version(this.fileId)) === this.version) return;
+      const remote = await storage.load(this.fileId);
+      this.version = remote.version;
+      const mine = this.current!;
+      this.current = model.merge(mine, remote.doc);
+      this.saved = model.hasLocalWins(mine, remote.doc) ? remote.doc : this.current;
+      this.set({ doc: this.current });
+      if (!this.dirty) return;
     }
-    return !this.dirty;
+    throw new SaveConflictError();
   }
 
   dismissNotice(kind: SyncNotice<Notice>['kind']) {
@@ -290,8 +328,12 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
    * document always holds every record of that version.
    */
   private keepCopy(unsaved: boolean) {
-    if (!this.current) return;
-    this.options.replica?.write(this.current, unsaved, this.fileId || undefined, this.fileId ? this.version : undefined);
+    const { replica } = this.options;
+    // Closed: an open or a save still under way must not write the document back to a device
+    // that signing out has just cleared.
+    if (!this.current || !replica || this.closed) return;
+    const kept = replica.write(this.current, unsaved, this.fileId || undefined, this.fileId ? this.version : undefined);
+    if (kept !== this.snapshot.copyKept) this.set({ copyKept: kept });
   }
 
   private async saveRounds() {
