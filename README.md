@@ -42,7 +42,7 @@ sync.update((doc) => change(doc)); // saved after a short delay; merged on confl
 | `google/picker` | Google's file picker, to open a file someone else shared (needed with the `drive.file` permission). |
 | `storage/DriveStorage`, `storage/MemoryStorage` | The `Storage` interface on Drive, and in memory for demos and tests. |
 | `sync/DocumentSync` | Open, auto-save, merge on conflict, retry with backoff, refresh, close. `close` reports everything saved only once storage is seen to hold it, and never writes the device copy afterwards. `copyKept` in the snapshot says whether the device copy could be stored. |
-| `sync/Replica` | The device copy in `localStorage`, with the file version it holds: a reload shows it at once and downloads the file only if its version changed; merged back on the next open. |
+| `sync/Replica` | The device copy in `localStorage`, with the file version it holds: a reload shows it at once and downloads the file only if its version changed; merged back on the next open. Copies of two different files are never mixed: the copy of a document that replaced another keeps its place, and a tab still on the old one follows the new one. |
 | `sync/Followed` | Documents shared with me, read-only, each loaded on its own. |
 
 ## Use it from an app
@@ -51,7 +51,7 @@ Apps depend on a version tag of this repository; there is no registry. npm 12 in
 dependencies only when allowed, so the app's `.npmrc` has `allow-git=all`.
 
 ```json
-"dependencies": { "drive-doc-sync": "github:flriancu/drive-doc-sync#semver:^0.5.0" }
+"dependencies": { "drive-doc-sync": "github:flriancu/drive-doc-sync#semver:^0.6.0" }
 ```
 
 The package ships TypeScript sources; the app's Vite build compiles them.

@@ -1,4 +1,5 @@
 import type { DocumentModel, SyncNotice } from '../model';
+import { UnsupportedDocumentError } from '../errors';
 import { fileGone, isRetryable, needsSignIn, type Storage } from '../storage/Storage';
 import type { ReplicaCopy, ReplicaStore } from './Replica';
 import { retryDelay } from './retry';
@@ -91,6 +92,8 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
   private current: Doc | null = null;
   private saved: Doc | null = null;
   private fileId = '';
+  /** The file a reopen left: what this tab holds is a copy of it, which a new document may have replaced. */
+  private reopenedFrom = '';
   private version = '';
   private duplicates: string[] = [];
   private queue: Promise<unknown> = Promise.resolve();
@@ -247,13 +250,15 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     const { storage, owner, replica, carry, model } = this.options;
     const startNew = how === 'new';
     // What this tab had open before (a reopen after its file went away) is kept and merged in.
-    const before = startNew ? null : this.current && { doc: this.current, fileId: this.fileId };
+    const before = startNew ? null : this.current && { doc: this.current, fileId: this.fileId || this.reopenedFrom };
     const kept = startNew ? null : (replica?.read() ?? null);
     const shown = this.showCopy(how, kept);
     const refs = await storage.listFiles();
     let doc: Doc;
     let duplicates: Doc[] = [];
     let unchanged = false;
+    /** Damaged files passed over, oldest first: they stay in storage, untouched. */
+    let unreadable = 0;
     this.duplicates = [];
     if (refs.length === 0) {
       const removed = await storage.listRemoved();
@@ -271,18 +276,22 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     } else {
       // The oldest file is the document; any others (two devices creating one at once) are
       // added to it and then moved to the trash. One that can't be read is left alone: it must
-      // not keep the document from opening.
+      // not keep the document from opening. A file that is damaged (not even a document) is
+      // passed over for the next one, and the user is told; a file of a newer version is not.
       const [first, ...others] = refs;
-      this.fileId = first!.fileId;
       // This device's copy holds every record of the version it names: if the file is still at
       // that version, there is nothing to download.
       unchanged = others.length === 0 && !!kept?.version && kept.fileId === first!.fileId && kept.version === first!.version;
       if (unchanged) {
+        this.fileId = first!.fileId;
         doc = kept!.doc;
         this.version = kept!.version!;
       } else {
-        ({ doc, version: this.version } = await storage.load(first!.fileId));
-        for (const other of others) {
+        const opened = await this.loadOldestReadable(refs);
+        unreadable = opened.at;
+        this.fileId = refs[opened.at]!.fileId;
+        ({ doc, version: this.version } = opened.loaded);
+        for (const other of refs.slice(opened.at + 1)) {
           const loaded = await storage.load(other.fileId).catch(() => null);
           if (!loaded) continue;
           duplicates.push(loaded.doc);
@@ -311,6 +320,7 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     duplicates = [];
 
     const notices: SyncNotice<Notice>[] = [];
+    if (unreadable) notices.push({ kind: 'unreadableFiles', count: unreadable });
     const demo = carry?.();
     const carried = demo ? model.contentCount(demo) : 0;
     if (demo && carried) {
@@ -324,6 +334,23 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     this.keepCopy(this.dirty);
     if (this.dirty) this.schedule(0);
     else void this.removeDuplicates();
+  }
+
+  /**
+   * The oldest file that can be read, and how many damaged ones came before it. A damaged file
+   * is not a document at all (it does not parse, or holds no document); it is passed over and
+   * left as it is. A file a newer version wrote, or one too big, is the document: its error
+   * stops the open, as does a damaged file when no file after it can be read.
+   */
+  private async loadOldestReadable(refs: readonly { fileId: string }[]): Promise<{ at: number; loaded: { doc: Doc; version: string } }> {
+    for (let at = 0; ; at++) {
+      try {
+        return { at, loaded: await this.options.storage.load(refs[at]!.fileId) };
+      } catch (e) {
+        const damaged = e instanceof UnsupportedDocumentError && e.reason !== 'version' && e.reason !== 'tooBig';
+        if (!damaged || at === refs.length - 1) throw e;
+      }
+    }
   }
 
   /**
@@ -347,7 +374,10 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
     // Closed: an open or a save still under way must not write the document back to a device
     // that signing out has just cleared.
     if (!this.current || !replica || this.closed) return;
-    const kept = replica.write(this.current, unsaved, this.fileId || undefined, this.fileId ? this.version : undefined);
+    const result = replica.write(this.current, unsaved, this.fileId || undefined, this.fileId ? this.version : undefined);
+    // Another tab started a new document in place of this one: follow it, as a reopen does.
+    if (result === 'replaced') return this.reopen();
+    const kept = result === 'kept';
     if (kept !== this.snapshot.copyKept) this.set({ copyKept: kept });
   }
 
@@ -398,6 +428,7 @@ export class DocumentSync<Doc extends object, Notice extends string = string> {
   private reopen() {
     if (this.closed) return; // signed out meanwhile: never again, and never with another account
     this.opening = null;
+    this.reopenedFrom = this.fileId || this.reopenedFrom;
     this.fileId = '';
     void this.open();
   }

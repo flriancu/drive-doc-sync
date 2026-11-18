@@ -6,15 +6,21 @@ import type { DocumentModel } from '../model';
  * session can cut that short. The copy survives all of them, and the next open merges it back
  * (records are merged by time, so replaying it is always safe).
  */
+/**
+ * What became of a write of the copy: 'kept'; 'full', storage refused it (full or blocked);
+ * 'replaced', the copy on this device is of a document that replaced the one written ("start a
+ * new document" in another tab), and it keeps its place.
+ */
+export type CopyResult = 'kept' | 'full' | 'replaced';
+
 export interface ReplicaStore<Doc> {
   /** The copy, the storage file (Drive file) it was a copy of, and that file's version it holds. */
   read(): ReplicaCopy<Doc> | null;
   /**
    * `unsaved`: holds changes that may not be in Drive yet. `version`: a version of `fileId`
    * whose every record `doc` holds, so a file still at that version needs no download.
-   * Returns false when the copy could not be stored (storage full or blocked).
    */
-  write(doc: Doc, unsaved: boolean, fileId?: string, version?: string): boolean;
+  write(doc: Doc, unsaved: boolean, fileId?: string, version?: string): CopyResult;
   hasUnsaved(): boolean;
   clear(): void;
 }
@@ -52,7 +58,7 @@ const prefixOf = (app: string) => `${app}.replica.`;
 export class LocalReplica<Doc> implements ReplicaStore<Doc> {
   constructor(
     private readonly key: string,
-    private readonly model: Pick<DocumentModel<Doc>, 'read' | 'write' | 'merge' | 'hasLocalWins'>,
+    private readonly model: Pick<DocumentModel<Doc>, 'read' | 'write' | 'merge' | 'hasLocalWins' | 'replaces'>,
     private readonly account?: ReplicaAccount,
     private readonly store: KeyValueStore | null = safeLocalStorage(),
   ) {}
@@ -61,9 +67,14 @@ export class LocalReplica<Doc> implements ReplicaStore<Doc> {
     return this.stored();
   }
 
-  write(doc: Doc, unsaved: boolean, fileId?: string, version?: string): boolean {
+  write(doc: Doc, unsaved: boolean, fileId?: string, version?: string): CopyResult {
+    const stored = this.stored();
+    // A copy of another file is never mixed in: two directories would become one. The copy of
+    // a document that replaced this one keeps its place; any other gives way to this write.
+    const otherFile = !!stored?.fileId && !!fileId && stored.fileId !== fileId;
+    if (otherFile && this.model.replaces(stored.doc).includes(fileId)) return 'replaced';
     // Another tab may have written records this one hasn't seen: keep them (merge by time).
-    const before = this.stored();
+    const before = otherFile ? null : stored;
     const merged = before ? this.model.merge(doc, before.doc) : doc;
     // Still unsaved if this change is, or if the copy held something (another tab's) that `doc` lacks.
     const stillUnsaved = unsaved || (!!before?.unsaved && this.model.hasLocalWins(before.doc, doc));
@@ -72,20 +83,20 @@ export class LocalReplica<Doc> implements ReplicaStore<Doc> {
     // held is still true of it: this tab's, else the stored one for the same file.
     const holds = version ?? (file === before?.fileId ? before?.version : undefined);
     try {
-      const stored: Stored = {
+      const copy: Stored = {
         unsaved: stillUnsaved,
         doc: this.model.write(merged),
         ...(this.account && { account: this.account }),
         ...(file && { fileId: file }),
         ...(file && holds && { version: holds }),
       };
-      if (!this.store) return false;
-      this.store.setItem(this.key, JSON.stringify(stored));
-      return true;
+      if (!this.store) return 'full';
+      this.store.setItem(this.key, JSON.stringify(copy));
+      return 'kept';
     } catch {
       // Storage full (a document over the browser's quota) or blocked: there is no copy, and the
       // caller must not promise one.
-      return false;
+      return 'full';
     }
   }
 

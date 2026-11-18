@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { UnsupportedDocumentError } from '../../src/errors';
 import { MemoryStorage } from '../../src/storage/MemoryStorage';
 import type { SaveResult } from '../../src/storage/Storage';
 import { DocumentMissingError, DocumentRemovedError, DocumentSync, OtherOwnerError, type SyncOptions } from '../../src/sync/DocumentSync';
@@ -284,6 +285,53 @@ describe('DocumentSync', () => {
     expect(JSON.stringify(await storedDoc(storage))).not.toContain('old private note');
     expect(store.items.size).toBe(1); // a fresh copy of the new document only
     expect(store.items.values().next().value).not.toContain('old private note');
+  });
+
+  it('a tab still on the old document, after another started a new one, follows the new one and never mixes them', async () => {
+    const storage = new TestStorage();
+    const store = new MapStore();
+    const oldTab = sync(storage, { replica: replicaIn(store) });
+    await oldTab.open();
+    add(oldTab, 'old private note');
+    await oldTab.flush();
+    await storage.remove((await storage.listFiles())[0]!.fileId);
+
+    const newTab = sync(storage, { replica: replicaIn(store) });
+    await newTab.open();
+    await newTab.open('new');
+    await vi.advanceTimersByTimeAsync(0);
+    add(newTab, 'new note');
+    await newTab.flush();
+
+    add(oldTab, 'typed in the old tab'); // its copy would be of the replaced document
+    await vi.advanceTimersByTimeAsync(0);
+    expect(store.items.values().next().value).not.toContain('old private note');
+    expect(values(oldTab.getSnapshot().doc!)).toEqual(['new note']); // it follows the new document
+  });
+
+  it('opens the next file when the oldest is damaged, leaves the damaged one alone, and says so', async () => {
+    const storage = new TestStorage([otherDevicesDoc('damaged'), otherDevicesDoc('good')]);
+    const [damaged, good] = await storage.listFiles();
+    const load = storage.load.bind(storage);
+    storage.load = async (fileId) => {
+      if (fileId === damaged!.fileId) throw new UnsupportedDocumentError('does not parse', 'json');
+      return load(fileId);
+    };
+    const s = sync(storage);
+    await s.open();
+    expect(values(s.getSnapshot().doc!)).toEqual(['good']);
+    expect(s.file).toBe(good!.fileId);
+    expect(s.getSnapshot().notices).toContainEqual({ kind: 'unreadableFiles', count: 1 });
+    expect((await storage.listFiles()).map((f) => f.fileId)).toContain(damaged!.fileId);
+
+    // A file a newer version wrote is the document: it is not passed over.
+    storage.load = async (fileId) => {
+      if (fileId === damaged!.fileId) throw new UnsupportedDocumentError('schema 9', 'version');
+      return load(fileId);
+    };
+    const t = sync(storage);
+    await t.open().catch(() => {});
+    expect(t.getSnapshot().loadError).toBeInstanceOf(UnsupportedDocumentError);
   });
 
   it('when its file goes away (merged into an older one), finds the document again and adds its changes', async () => {
